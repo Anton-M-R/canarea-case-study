@@ -8,9 +8,16 @@ This repository describes the system and the decisions behind it. The source cod
 
 **Stack:** TypeScript, Astro, Next.js 16 and React 19 (via OpenNext), Cloudflare Workers, D1, R2 and Durable Objects (SQLite), Stripe, Google Calendar API, MCP, zod, visx, Playwright, `node:test`.
 
+**At a glance:**
+
+- Booking, payments and gapless invoices in one SQLite Durable Object, with one transaction per change.
+- A workflow engine with a visual builder and a dry run on copied data, which replaced hard-coded e-mails.
+- About 160 typed operations shared by the admin UI and an MCP server. Risky actions from an AI agent wait for the owner's approval.
+- About 1,500 test cases (unit, build, and Playwright in Chromium and WebKit) gate every push. The website tests run again before each deploy.
+
 ## The problem
 
-The owner runs the business alone and has about two hours a week for the website. New clients come almost only from Google search and referrals, so the website is the main sales channel. The budget for paid tools is close to zero.
+The owner runs the business alone and has little time for administration. The website is where new clients find her.
 
 She needed one system that does all of this:
 
@@ -67,7 +74,7 @@ A booking, a payment and an invoice must never be half-written. Two people must 
 
 I put the whole booking domain into one SQLite Durable Object. A Durable Object handles one request at a time, and each change runs in one SQL transaction. So the rules hold without locks:
 
-- An online booking holds its time for 15 minutes until the client confirms the e-mail. Unpaid reservations and times the owner offers are held for 24 hours. Holds expire before every request.
+- An online booking holds its time for 15 minutes until the client confirms the e-mail. A Stripe checkout holds its time for 30 minutes by default. Times the owner offers and reservations she accepts are held for 24 hours by default. Holds expire before every request.
 - An appointment is `reserved` until it is paid, then `booked`.
 - Invoice numbers have no gaps. The PDF is generated in the Worker and stored with the invoice row.
 - Stripe is optional. The engine registers its own webhook when the owner enters her key. Without Stripe, she marks payments as cash or bank transfer.
@@ -81,7 +88,7 @@ The owner wanted to change e-mails and status changes herself. So I replaced har
 - Workflows are versioned. A run stays on the version it started with.
 - A cron tick runs every minute. A tick with no work costs three SQL statements, and a test keeps it that way.
 - A tick holds a lease. Each action is marked `executing` before it runs, so a step that gets cut off fails visibly and does not send an e-mail twice. A workflow can run at most 10 times per client and hour, and cycles are refused, which stops loops.
-- **Dry run.** The owner can test a workflow on copies of the data, with its own clock that jumps to the next due step. During a dry run, every function that can reach live data, send mail or start a deploy throws. Tests check that each table is classified as "copy", "copy on request" or "empty", so a new table cannot leak into a dry run by accident.
+- **Dry run.** The owner can test a workflow on copies of the data, with its own clock that jumps to the next due step. During a dry run, the normal functions that reach live data, send mail or start a deploy throw. The only exception is optional: the owner can let the dry run send its e-mails to herself, marked as a test. Tests check that each table is classified as "copy", "copy on request" or "empty", so a new table cannot leak into a dry run by accident.
 - 15 standard workflows (booking confirmed, payment request, cancellation and others) ship as defaults. The owner can change, pause or reset each one.
 
 ### 3. One typed operation layer for the UI and for AI agents
@@ -107,7 +114,7 @@ defineOp({
 
 ### 4. Tests as the only gate
 
-No external CI service runs for this repository, so the local `pnpm verify` is the gate before every push, and the Cloudflare build runs the website tests again before each deploy.
+No external CI service runs for the private project repository, so the local `pnpm verify` is the gate before every push, and the Cloudflare build runs the website tests again before each deploy.
 
 - About 190 test files with about 1,500 test cases: `node:test` unit tests, build tests that read the built HTML with JSDOM, and Playwright browser tests.
 - Each check runs at the lowest level that can see it. Logic is unit-tested. Page content is checked in the build. The browser runs only what needs a browser.
